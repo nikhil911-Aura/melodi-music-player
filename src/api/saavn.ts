@@ -1,6 +1,6 @@
 import { Song, Album, Artist, SearchResult } from '../types';
 
-const BASE_URL = 'https://saavn.sumit.co';
+const BASE_URL = 'https://jiosaavn-api-privatecvc2.vercel.app';
 
 async function fetchAPI<T>(endpoint: string, params: Record<string, string> = {}): Promise<T> {
   const url = new URL(`${BASE_URL}${endpoint}`);
@@ -8,6 +8,33 @@ async function fetchAPI<T>(endpoint: string, params: Record<string, string> = {}
   const res = await fetch(url.toString());
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return res.json();
+}
+
+// New API returns primaryArtists as a comma-separated string — normalize to Song type
+function normalizeSong(raw: any): Song {
+  let primary: Artist[] = [];
+  if (raw.artists?.primary && Array.isArray(raw.artists.primary)) {
+    primary = raw.artists.primary;
+  } else if (raw.primaryArtists) {
+    if (typeof raw.primaryArtists === 'string' && raw.primaryArtists.trim()) {
+      const ids = (raw.primaryArtistsId || '').split(',').map((s: string) => s.trim());
+      primary = raw.primaryArtists.split(',').map((name: string, i: number) => ({
+        id: ids[i] || String(i),
+        name: name.trim(),
+        url: '',
+      }));
+    } else if (Array.isArray(raw.primaryArtists)) {
+      primary = raw.primaryArtists;
+    }
+  }
+
+  return {
+    ...raw,
+    duration: typeof raw.duration === 'string' ? parseInt(raw.duration, 10) : (raw.duration || 0),
+    artists: { primary, featured: raw.artists?.featured || [], all: raw.artists?.all || [] },
+    downloadUrl: raw.downloadUrl || [],
+    image: raw.image || [],
+  };
 }
 
 export function getBestImage(images: { quality: string; url?: string; link?: string }[]): string {
@@ -28,61 +55,74 @@ export function getBestAudio(urls: { quality: string; url?: string; link?: strin
 }
 
 export function getArtistNames(song: Song): string {
-  if (!song.artists?.primary?.length) return 'Unknown Artist';
-  return song.artists.primary.map(a => a.name).join(', ');
+  if (song.artists?.primary?.length) {
+    return song.artists.primary.map(a => a.name).join(', ');
+  }
+  return 'Unknown Artist';
 }
 
 export async function searchSongs(query: string, page = 1): Promise<{ results: Song[]; total: number }> {
-  const data = await fetchAPI<any>('/api/search/songs', { query, page: String(page), limit: '20' });
-  return data?.data || { results: [], total: 0 };
+  const data = await fetchAPI<any>('/search/songs', { query, page: String(page), limit: '20' });
+  const raw = data?.data || { results: [], total: 0 };
+  return {
+    results: (raw.results || []).map(normalizeSong),
+    total: raw.total || 0,
+  };
 }
 
 export async function searchAll(query: string): Promise<SearchResult> {
-  const data = await fetchAPI<any>('/api/search', { query });
-  return data?.data || {};
+  try {
+    const [songs, albums, artists] = await Promise.all([
+      searchSongs(query),
+      searchAlbums(query),
+      searchArtists(query),
+    ]);
+    return { songs, albums, artists };
+  } catch {
+    return {};
+  }
 }
 
 export async function getTrendingSongs(page = 1): Promise<{ results: Song[]; total: number }> {
-  const data = await fetchAPI<any>('/api/search/songs', { query: 'trending', page: String(page), limit: '20' });
-  return data?.data || { results: [], total: 0 };
+  return searchSongs('trending hindi', page);
 }
 
 export async function getBollywoodHits(page = 1): Promise<{ results: Song[]; total: number }> {
-  const data = await fetchAPI<any>('/api/search/songs', { query: 'bollywood hits 2024', page: String(page), limit: '20' });
-  return data?.data || { results: [], total: 0 };
+  return searchSongs('bollywood hits 2024', page);
 }
 
 export async function searchArtists(query: string, page = 1): Promise<{ results: Artist[]; total: number }> {
-  const data = await fetchAPI<any>('/api/search/artists', { query, page: String(page), limit: '20' });
+  const data = await fetchAPI<any>('/search/artists', { query, page: String(page), limit: '20' });
   return { results: data?.data?.results || [], total: data?.data?.total || 0 };
 }
 
 export async function searchAlbums(query: string, page = 1): Promise<{ results: Album[]; total: number }> {
-  const data = await fetchAPI<any>('/api/search/albums', { query, page: String(page), limit: '20' });
+  const data = await fetchAPI<any>('/search/albums', { query, page: String(page), limit: '20' });
   return { results: data?.data?.results || [], total: data?.data?.total || 0 };
 }
 
 export async function getSongById(id: string): Promise<Song | null> {
-  const data = await fetchAPI<any>(`/api/songs/${id}`);
-  return data?.data?.[0] || null;
+  const data = await fetchAPI<any>(`/songs`, { id });
+  const raw = data?.data?.['0'] || data?.data?.[0] || null;
+  return raw ? normalizeSong(raw) : null;
 }
 
 export async function getSongSuggestions(id: string): Promise<Song[]> {
-  const data = await fetchAPI<any>(`/api/songs/${id}/suggestions`, { limit: '10' });
-  return data?.data || [];
+  // Not supported by this API — fall back to empty
+  return [];
 }
 
 export async function getArtistById(id: string): Promise<Artist | null> {
-  const data = await fetchAPI<any>(`/api/artists/${id}`);
+  const data = await fetchAPI<any>(`/artists`, { id });
   return data?.data || null;
 }
 
 export async function getArtistSongs(id: string): Promise<Song[]> {
-  const data = await fetchAPI<any>(`/api/artists/${id}/songs`);
-  return data?.data?.results || [];
+  const data = await fetchAPI<any>(`/artists/${id}/songs`, { page: '1' });
+  return (data?.data?.results || []).map(normalizeSong);
 }
 
 export async function getTopArtistsSongs(): Promise<Song[]> {
-  const data = await fetchAPI<any>('/api/search/songs', { query: 'arijit singh', limit: '10' });
-  return data?.data?.results || [];
+  const data = await searchSongs('arijit singh', 1);
+  return data.results.slice(0, 10);
 }
